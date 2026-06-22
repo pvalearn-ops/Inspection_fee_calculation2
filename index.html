@@ -108,12 +108,12 @@
                         @dragleave.prevent="isDragging = false"
                         @drop="onDrop"
                     >
-                        <input type="file" id="file-upload" class="hidden" accept=".doc,.docx" @change="onFileChange" />
+                        <input type="file" id="file-upload" class="hidden" accept=".doc,.docx" multiple @change="onFileChange" />
                         <label for="file-upload" class="cursor-pointer flex flex-col items-center justify-center h-48">
                             <i v-if="loading" class="fa-solid fa-circle-notch fa-spin text-4xl text-primary mb-4"></i>
                             <i v-else class="fa-solid fa-cloud-arrow-up text-5xl text-primary mb-4"></i>
-                            <h3 class="text-xl font-medium mb-2">拖曳 Word 檔案至此</h3>
-                            <p class="text-gray-400 text-sm">支援 .docx 格式，或點擊瀏覽檔案</p>
+                            <h3 class="text-xl font-medium mb-2">拖曳多個 Word 檔案至此</h3>
+                            <p class="text-gray-400 text-sm">支援一次上傳多份 .docx 檔案，設備與機械皆可混搭</p>
                         </label>
                     </div>
 
@@ -408,170 +408,169 @@
                     return { byType: res, grandTotal, totalItems };
                 });
 
-                const processFile = async (file) => {
-                    if (!file.name.endsWith('.docx') && !file.name.endsWith('.doc')) {
+                const processFiles = async (files) => {
+                    const validFiles = Array.from(files).filter(f => f.name.endsWith('.docx') || f.name.endsWith('.doc'));
+                    if (validFiles.length === 0) {
                         alert('請上傳 Word 檔案 (.docx)');
                         return;
                     }
+                    
                     loading.value = true;
-                    try {
-                        const arrayBuffer = await file.arrayBuffer();
-                        const result = await mammoth.convertToHtml({arrayBuffer: arrayBuffer});
-                        const parser = new DOMParser();
-                        const doc = parser.parseFromString(result.value, "text/html");
-                        const tables = doc.querySelectorAll("table");
-                        let results = [];
+                    let allResults = [];
+                    
+                    for (const file of validFiles) {
+                        try {
+                            const arrayBuffer = await file.arrayBuffer();
+                            const result = await mammoth.convertToHtml({arrayBuffer: arrayBuffer});
+                            const parser = new DOMParser();
+                            const doc = parser.parseFromString(result.value, "text/html");
+                            const tables = doc.querySelectorAll("table");
 
-                        tables.forEach(table => {
-                            const rows = table.querySelectorAll("tr");
-                            if (rows.length === 0) return;
+                            tables.forEach(table => {
+                                const rows = table.querySelectorAll("tr");
+                                if (rows.length === 0) return;
 
-                            let headerMap = { code: -1, insp: -1, load: -1, area: -1, vol: -1 };
-                            let foundHeader = false;
+                                let headerMap = { code: -1, insp: -1, load: -1, area: -1, vol: -1 };
+                                let foundHeader = false;
 
-                            // 1. 嘗試透過表頭精準定位
-                            for (let r = 0; r < Math.min(rows.length, 10); r++) {
-                                const cells = rows[r].querySelectorAll("td, th");
-                                const textArr = Array.from(cells).map(c => c.textContent.replace(/\s+/g, '').toUpperCase());
-                                
-                                let cIdx = textArr.findIndex(t => t.includes("代碼") || t.includes("號碼") || t.includes("編號"));
-                                let iIdx = textArr.findIndex(t => t.includes("檢查") || t.includes("類別") || t.includes("方式") || t.includes("申報"));
-                                
-                                let loadIdx = textArr.findIndex(t => t.includes("荷重") || t.includes("噸"));
-                                let areaIdx = textArr.findIndex(t => t.includes("面積") || t.includes("M2"));
-                                let volIdx = textArr.findIndex(t => t.includes("內容積") || t.includes("M3"));
+                                for (let r = 0; r < Math.min(rows.length, 10); r++) {
+                                    const cells = rows[r].querySelectorAll("td, th");
+                                    const textArr = Array.from(cells).map(c => c.textContent.replace(/\s+/g, '').toUpperCase());
+                                    
+                                    let cIdx = textArr.findIndex(t => t.includes("代碼") || t.includes("號碼") || t.includes("編號"));
+                                    let iIdx = textArr.findIndex(t => t.includes("檢查") || t.includes("類別") || t.includes("方式") || t.includes("申報"));
+                                    
+                                    let loadIdx = textArr.findIndex(t => t.includes("荷重") || t.includes("噸"));
+                                    let areaIdx = textArr.findIndex(t => t.includes("面積") || t.includes("M2"));
+                                    let volIdx = textArr.findIndex(t => t.includes("內容積") || t.includes("M3"));
 
-                                if (cIdx !== -1) {
-                                    headerMap = { code: cIdx, insp: iIdx, load: loadIdx, area: areaIdx, vol: volIdx };
-                                    foundHeader = true;
-                                    break;
-                                }
-                            }
-
-                            // 2. 解析每一列
-                            rows.forEach(row => {
-                                const cells = Array.from(row.querySelectorAll("td, th"));
-                                if (cells.length === 0) return;
-                                
-                                let eqType = null, eqCode = null, capacity = 0, inspCode = null;
-                                let rawText = cells.map(c => c.textContent.trim().replace(/\n/g, ' ')).join(' | ');
-
-                                // A. 抓取設備代碼 (取最後一個吻合的 10 碼)
-                                let codeCellText = "";
-                                if (headerMap.code !== -1 && cells[headerMap.code]) {
-                                    codeCellText = cells[headerMap.code].textContent.replace(/\s+/g, '').toUpperCase();
-                                } else {
-                                    codeCellText = cells.map(c => c.textContent.replace(/\s+/g, '').toUpperCase()).join(' ');
-                                }
-
-                                let codeMatches = [];
-                                for (let i = 0; i <= codeCellText.length - 10; i++) {
-                                    let sub = codeCellText.substring(i, i + 10);
-                                    if (/^[A-Z0-9]{3}[FMEGBPSH][A-Z0-9]{6}$/.test(sub)) {
-                                        codeMatches.push(sub);
+                                    if (cIdx !== -1) {
+                                        headerMap = { code: cIdx, insp: iIdx, load: loadIdx, area: areaIdx, vol: volIdx };
+                                        foundHeader = true;
+                                        break;
                                     }
                                 }
-                                if (codeMatches.length > 0) {
-                                    eqCode = codeMatches[codeMatches.length - 1];
-                                    eqType = eqCode.charAt(3);
-                                }
 
-                                if (!eqCode) return;
+                                rows.forEach(row => {
+                                    const cells = Array.from(row.querySelectorAll("td, th"));
+                                    if (cells.length === 0) return;
+                                    
+                                    let eqType = null, eqCode = null, capacity = 0, inspCode = null;
+                                    let rawText = cells.map(c => c.textContent.trim().replace(/\n/g, ' ')).join(' | ');
 
-                                // B. 抓取檢查別
-                                if (headerMap.insp !== -1 && cells[headerMap.insp]) {
-                                    let txt = cells[headerMap.insp].textContent.replace(/\s+/g, '').toUpperCase();
-                                    let m = txt.match(/^[0-9]*([FWUCRMLO])/);
-                                    if (m) {
-                                        inspCode = m[1];
+                                    let codeCellText = "";
+                                    if (headerMap.code !== -1 && cells[headerMap.code]) {
+                                        codeCellText = cells[headerMap.code].textContent.replace(/\s+/g, '').toUpperCase();
                                     } else {
-                                        const revMap = { '定期':'F', '熔接':'W', '構造':'U', '竣工':'C', '重新':'R', '變更':'M', '既有':'L', '使用':'O' };
-                                        for (let key in revMap) {
-                                            if (txt.includes(key)) {
-                                                inspCode = revMap[key];
-                                                break;
-                                            }
+                                        codeCellText = cells.map(c => c.textContent.replace(/\s+/g, '').toUpperCase()).join(' ');
+                                    }
+
+                                    let codeMatches = [];
+                                    for (let i = 0; i <= codeCellText.length - 10; i++) {
+                                        let sub = codeCellText.substring(i, i + 10);
+                                        if (/^[A-Z0-9]{3}[FMEGBPSH][A-Z0-9]{6}$/.test(sub)) {
+                                            codeMatches.push(sub);
                                         }
                                     }
-                                } else {
-                                    for (let i = 0; i < cells.length; i++) {
-                                        let txt = cells[i].textContent.replace(/\s+/g, '').toUpperCase();
-                                        if (txt.includes(eqCode)) continue;
-                                        
+                                    if (codeMatches.length > 0) {
+                                        eqCode = codeMatches[codeMatches.length - 1];
+                                        eqType = eqCode.charAt(3);
+                                    }
+
+                                    if (!eqCode) return;
+
+                                    if (headerMap.insp !== -1 && cells[headerMap.insp]) {
+                                        let txt = cells[headerMap.insp].textContent.replace(/\s+/g, '').toUpperCase();
                                         let m = txt.match(/^[0-9]*([FWUCRMLO])/);
                                         if (m) {
                                             inspCode = m[1];
-                                            break;
-                                        }
-                                        const revMap = { '定期':'F', '熔接':'W', '構造':'U', '竣工':'C', '重新':'R', '變更':'M', '既有':'L', '使用':'O' };
-                                        for (let key in revMap) {
-                                            if (txt.includes(key)) {
-                                                inspCode = revMap[key];
-                                                break;
+                                        } else {
+                                            const revMap = { '定期':'F', '熔接':'W', '構造':'U', '竣工':'C', '重新':'R', '變更':'M', '既有':'L', '使用':'O' };
+                                            for (let key in revMap) {
+                                                if (txt.includes(key)) {
+                                                    inspCode = revMap[key];
+                                                    break;
+                                                }
                                             }
                                         }
-                                        if (inspCode) break;
-                                    }
-                                }
-
-                                if (!inspCode && eqCode.length >= 5) {
-                                    let fifth = eqCode.charAt(4);
-                                    if (['F','W','U','C','R','M','L','O'].includes(fifth)) {
-                                        inspCode = fifth;
-                                    }
-                                }
-
-                                // C. 抓取容量 (依據設備種類去抓對應的標題欄位)
-                                let capIdx = -1;
-                                if (['F', 'M', 'E', 'G'].includes(eqType)) capIdx = headerMap.load;
-                                else if (eqType === 'B') capIdx = headerMap.area;
-                                else if (['P', 'S', 'H'].includes(eqType)) capIdx = headerMap.vol;
-
-                                if (capIdx !== -1 && cells[capIdx]) {
-                                    let txt = cells[capIdx].textContent;
-                                    let num = parseFloat(txt.replace(/[^\d.-]/g, ''));
-                                    if (!isNaN(num) && num > 0) {
-                                        capacity = num;
-                                    }
-                                } else if (capIdx === -1) {
-                                    // 盲抓 (只有在找不到對應表頭時才盲抓，避免抓到項次)
-                                    for (let i = 1; i < cells.length; i++) {
-                                        let txt = cells[i].textContent.replace(/\s+/g, '');
-                                        if (!txt.includes('/') && !txt.includes('-') && !txt.includes('年')) {
-                                            let num = parseFloat(txt.replace(/[^\d.-]/g, ''));
-                                            if (!isNaN(num) && num > 0 && num < 100000) {
-                                                capacity = num;
+                                    } else {
+                                        for (let i = 0; i < cells.length; i++) {
+                                            let txt = cells[i].textContent.replace(/\s+/g, '').toUpperCase();
+                                            if (txt.includes(eqCode)) continue;
+                                            
+                                            let m = txt.match(/^[0-9]*([FWUCRMLO])/);
+                                            if (m) {
+                                                inspCode = m[1];
                                                 break;
+                                            }
+                                            const revMap = { '定期':'F', '熔接':'W', '構造':'U', '竣工':'C', '重新':'R', '變更':'M', '既有':'L', '使用':'O' };
+                                            for (let key in revMap) {
+                                                if (txt.includes(key)) {
+                                                    inspCode = revMap[key];
+                                                    break;
+                                                }
+                                            }
+                                            if (inspCode) break;
+                                        }
+                                    }
+
+                                    if (!inspCode && eqCode.length >= 5) {
+                                        let fifth = eqCode.charAt(4);
+                                        if (['F','W','U','C','R','M','L','O'].includes(fifth)) {
+                                            inspCode = fifth;
+                                        }
+                                    }
+
+                                    let capIdx = -1;
+                                    if (['F', 'M', 'E', 'G'].includes(eqType)) capIdx = headerMap.load;
+                                    else if (eqType === 'B') capIdx = headerMap.area;
+                                    else if (['P', 'S', 'H'].includes(eqType)) capIdx = headerMap.vol;
+
+                                    if (capIdx !== -1 && cells[capIdx]) {
+                                        let txt = cells[capIdx].textContent;
+                                        let num = parseFloat(txt.replace(/[^\d.-]/g, ''));
+                                        if (!isNaN(num) && num > 0) {
+                                            capacity = num;
+                                        }
+                                    } else if (capIdx === -1) {
+                                        for (let i = 1; i < cells.length; i++) {
+                                            let txt = cells[i].textContent.replace(/\s+/g, '');
+                                            if (!txt.includes('/') && !txt.includes('-') && !txt.includes('年')) {
+                                                let num = parseFloat(txt.replace(/[^\d.-]/g, ''));
+                                                if (!isNaN(num) && num > 0 && num < 100000) {
+                                                    capacity = num;
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                if (eqCode && eqType && inspCode) {
-                                    results.push({ eqCode, eqType, capacity, inspCode, rawText });
-                                }
+                                    if (eqCode && eqType && inspCode) {
+                                        allResults.push({ eqCode, eqType, capacity, inspCode, rawText });
+                                    }
+                                });
                             });
-                        });
-                        
-                        parsedData.value.push(...results);
-                    } catch (e) {
-                        console.error(e);
-                        alert('解析檔案失敗，請確保上傳的是正確的 Word 檔案。');
+                        } catch (e) {
+                            console.error(`解析檔案 ${file.name} 失敗:`, e);
+                            alert(`檔案 ${file.name} 解析失敗，可能格式不正確。已跳過該檔案繼續處理。`);
+                        }
                     }
+                    
+                    parsedData.value.push(...allResults);
                     loading.value = false;
                 };
 
                 const onDrop = (e) => {
                     e.preventDefault();
                     isDragging.value = false;
-                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                        processFile(e.dataTransfer.files[0]);
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        processFiles(e.dataTransfer.files);
                     }
                 };
 
                 const onFileChange = (e) => {
-                    if (e.target.files && e.target.files[0]) {
-                        processFile(e.target.files[0]);
+                    if (e.target.files && e.target.files.length > 0) {
+                        processFiles(e.target.files);
                         e.target.value = '';
                     }
                 };
