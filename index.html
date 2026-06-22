@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>設備檢查規費統計系統</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Mammoth.js for Word processing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.4.21/mammoth.browser.min.js"></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        dark: '#0f172a',
+                        glass: 'rgba(30, 41, 59, 0.7)',
+                        primary: '#3b82f6',
+                        accent: '#10b981'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            min-height: 100vh;
+        }
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        .fade-in { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .drop-zone {
+            border: 2px dashed #3b82f6;
+            transition: all 0.3s ease;
+        }
+        .drop-zone.active {
+            background: rgba(59, 130, 246, 0.2);
+            border-color: #60a5fa;
+            transform: scale(1.02);
+        }
+        [v-cloak] { display: none; }
+    </style>
+</head>
+<body>
+    <div id="app" v-cloak>
+        <div class="container mx-auto px-4 py-8 max-w-7xl">
+            <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+                <div>
+                    <h1 class="text-3xl font-bold text-white mb-2 tracking-wide"><i class="fa-solid fa-chart-pie text-primary mr-3"></i>設備檢查規費統計</h1>
+                    <p class="text-gray-400">自動解析 Word 表格資料並計算規費</p>
+                </div>
+                <div class="flex gap-4">
+                    <button @click="parsedData = []" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors text-sm font-medium">
+                        <i class="fa-solid fa-trash mr-2"></i>清除資料
+                    </button>
+                    <button @click="isSettingsOpen = true" class="px-4 py-2 bg-primary hover:bg-blue-600 rounded-lg transition-colors text-sm font-medium shadow-lg shadow-blue-500/30">
+                        <i class="fa-solid fa-gear mr-2"></i>級距設定
+                    </button>
+                </div>
+            </header>
+
+            <!-- Tabs -->
+            <div class="flex gap-6 border-b border-slate-700 mb-8">
+                <button 
+                    @click="currentTab = 'stats'" 
+                    :class="['pb-3 text-lg font-medium transition-colors', currentTab === 'stats' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-500 hover:text-gray-300']"
+                >
+                    <i class="fa-solid fa-chart-bar mr-2"></i>統計總覽
+                </button>
+                <button 
+                    @click="currentTab = 'debug'" 
+                    :class="['pb-3 text-lg font-medium transition-colors', currentTab === 'debug' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-500 hover:text-gray-300']"
+                >
+                    <i class="fa-solid fa-bug mr-2"></i>解析除錯
+                </button>
+            </div>
+
+            <!-- Stats Tab -->
+            <div v-show="currentTab === 'stats'" class="grid grid-cols-1 xl:grid-cols-4 gap-8 fade-in">
+                <div class="xl:col-span-1">
+                    <div 
+                        :class="['glass-panel rounded-xl p-8 text-center drop-zone', isDragging ? 'active' : '']"
+                        @dragover.prevent="isDragging = true"
+                        @dragleave.prevent="isDragging = false"
+                        @drop="onDrop"
+                    >
+                        <input type="file" id="file-upload" class="hidden" accept=".doc,.docx" @change="onFileChange" />
+                        <label for="file-upload" class="cursor-pointer flex flex-col items-center justify-center h-48">
+                            <i v-if="loading" class="fa-solid fa-circle-notch fa-spin text-4xl text-primary mb-4"></i>
+                            <i v-else class="fa-solid fa-cloud-arrow-up text-5xl text-primary mb-4"></i>
+                            <h3 class="text-xl font-medium mb-2">拖曳 Word 檔案至此</h3>
+                            <p class="text-gray-400 text-sm">支援 .docx 格式，或點擊瀏覽檔案</p>
+                        </label>
+                    </div>
+
+                    <div v-if="stats.totalItems > 0" class="glass-panel rounded-xl p-6 mt-8 fade-in bg-gradient-to-br from-slate-800/80 to-blue-900/20 border-blue-500/20">
+                        <h3 class="text-lg font-medium mb-4">統計總覽</h3>
+                        <div class="flex justify-between items-end mb-4 border-b border-slate-700 pb-4">
+                            <span class="text-gray-400">總計設備數</span>
+                            <span class="text-3xl font-bold text-white">{{ stats.totalItems }}</span>
+                        </div>
+                        <div class="flex justify-between items-end">
+                            <span class="text-gray-400">預估總規費</span>
+                            <span class="text-4xl font-bold text-accent">NT$ {{ stats.grandTotal.toLocaleString() }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="xl:col-span-3 space-y-8">
+                    <div v-if="Object.keys(stats.byType).length === 0 && !loading" class="glass-panel rounded-xl p-16 text-center text-gray-500 fade-in border border-dashed border-slate-700">
+                        <i class="fa-solid fa-file-invoice text-5xl mb-4 opacity-50"></i>
+                        <p class="text-lg">尚無資料，請上傳檔案以開始統計</p>
+                    </div>
+
+                    <div v-for="(data, type) in stats.byType" :key="type" class="glass-panel rounded-xl p-6 fade-in overflow-hidden shadow-lg">
+                        <div class="flex justify-between items-center mb-6 border-b border-slate-700 pb-4">
+                            <h2 class="text-2xl font-bold text-blue-400">
+                                {{ EQ_NAMES[type] || type }} <span class="text-sm font-normal text-gray-500 ml-2">代碼: {{ type }}</span>
+                            </h2>
+                            <div class="text-right">
+                                <div class="text-sm text-gray-400">小計 ({{ data.count }}件)</div>
+                                <div class="text-xl font-bold text-accent">NT$ {{ data.totalCost.toLocaleString() }}</div>
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-sm whitespace-nowrap">
+                                <thead>
+                                    <tr class="text-gray-400 border-b border-slate-700">
+                                        <th class="py-3 px-4 font-medium sticky left-0 bg-slate-800/80 backdrop-blur">檢查別</th>
+                                        <th v-for="(thresh, i) in getTiersCount(type)" :key="i" class="py-3 px-4 font-medium text-center border-l border-slate-700/50">
+                                            級距 {{ i + 1 }}<br/>
+                                            <span class="text-xs opacity-60">
+                                                {{ getTierLabel(type, i) }}
+                                            </span>
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(tierCounts, inspName) in data.items" :key="inspName" class="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
+                                        <td class="py-3 px-4 font-medium text-blue-200 sticky left-0 bg-slate-800/80 backdrop-blur">{{ inspName }}</td>
+                                        <td v-for="(thresh, i) in getTiersCount(type)" :key="i" class="py-3 px-4 text-center border-l border-slate-700/50">
+                                            <div v-if="tierCounts[i] > 0" class="bg-slate-700/50 rounded px-3 py-2 inline-block border border-slate-600 shadow-sm">
+                                                <div class="font-bold text-white mb-1">{{ tierCounts[i] }} 件</div>
+                                                <div v-if="getRate(type, inspName, i) !== null" class="text-xs text-accent">
+                                                    ${{ getRate(type, inspName, i).toLocaleString() }}
+                                                </div>
+                                                <div v-else class="text-xs text-gray-400">無費率</div>
+                                            </div>
+                                            <span v-else class="text-gray-600">-</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Debug Tab -->
+            <div v-show="currentTab === 'debug'" class="glass-panel rounded-xl p-6 fade-in">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold text-white">讀取資料除錯清單</h2>
+                    <p class="text-gray-400 text-sm">目前已解析出 {{ parsedData.length }} 筆資料</p>
+                </div>
+
+                <div v-if="parsedData.length === 0" class="text-center py-12 text-gray-500">
+                    <i class="fa-solid fa-ghost text-4xl mb-4"></i>
+                    <p>尚未讀取到任何資料，請先上傳檔案</p>
+                </div>
+                
+                <div v-else class="overflow-x-auto rounded-lg border border-slate-700">
+                    <table class="w-full text-left text-sm whitespace-nowrap">
+                        <thead class="bg-slate-800 text-gray-300 border-b border-slate-700">
+                            <tr>
+                                <th class="py-3 px-4 font-medium">#</th>
+                                <th class="py-3 px-4 font-medium">判定設備種類</th>
+                                <th class="py-3 px-4 font-medium">判定設備代碼</th>
+                                <th class="py-3 px-4 font-medium">判定檢查別</th>
+                                <th class="py-3 px-4 font-medium">判定容量</th>
+                                <th class="py-3 px-4 font-medium text-gray-500">原始擷取文字 (整列)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-800">
+                            <tr v-for="(item, idx) in parsedData" :key="idx" class="hover:bg-slate-800/30 transition-colors">
+                                <td class="py-3 px-4 text-gray-500">{{ idx + 1 }}</td>
+                                <td class="py-3 px-4">
+                                    <span class="inline-block bg-blue-900/50 text-blue-300 px-2 py-1 rounded text-xs font-bold border border-blue-800/50">
+                                        {{ EQ_NAMES[item.eqType] || item.eqType }} ({{ item.eqType }})
+                                    </span>
+                                </td>
+                                <td class="py-3 px-4 font-mono text-gray-300">{{ item.eqCode }}</td>
+                                <td class="py-3 px-4 font-medium text-emerald-400">
+                                    {{ INSP_MAPPING[item.inspCode] || item.inspCode }} ({{ item.inspCode }})
+                                </td>
+                                <td class="py-3 px-4 text-accent font-bold">{{ item.capacity }}</td>
+                                <td class="py-3 px-4 text-gray-500 text-xs truncate max-w-xl" :title="item.rawText">
+                                    {{ item.rawText }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Settings Modal -->
+            <div v-if="isSettingsOpen" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 fade-in">
+                <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+                    <div class="p-6 border-b border-slate-800 flex justify-between items-center shrink-0">
+                        <h2 class="text-xl font-bold"><i class="fa-solid fa-sliders mr-2 text-primary"></i>各類別容量級距設定</h2>
+                        <button @click="isSettingsOpen = false" class="text-gray-400 hover:text-white transition-colors">
+                            <i class="fa-solid fa-xmark text-xl"></i>
+                        </button>
+                    </div>
+                    <div class="p-6 overflow-y-auto flex-1">
+                        <div class="text-sm text-gray-300 mb-6 bg-blue-900/20 border border-blue-500/20 p-4 rounded-lg leading-relaxed">
+                            <i class="fa-solid fa-circle-info mr-2 text-primary"></i>
+                            系統已依據您提供的費率表自動載入正確的級距切分點。<br/>
+                            例如：若輸入 <code>10, 50, 100</code>，系統會自動切分為四個級距：<code>&lt;10</code>、<code>10~50</code>、<code>50~100</code> 以及 <code>&gt;=100</code>。<br/>
+                            <span class="text-gray-400 text-xs mt-2 block">* 多個數值請用逗號(,)分隔。</span>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div v-for="(val, eq) in thresholds" :key="eq" class="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 hover:border-slate-600 transition-colors">
+                                <label class="block text-sm font-medium text-blue-300 mb-2">
+                                    {{ EQ_NAMES[eq] || eq }} ({{ eq }})
+                                </label>
+                                <input 
+                                    type="text" 
+                                    class="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary font-mono text-sm"
+                                    :value="thresholds[eq].join(', ')"
+                                    @blur="updateThreshold(eq, $event.target.value)"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                    <div class="p-6 border-t border-slate-800 text-right bg-slate-900 shrink-0">
+                        <button @click="isSettingsOpen = false" class="px-8 py-2.5 bg-primary hover:bg-blue-600 rounded-lg font-medium transition-colors shadow-lg shadow-blue-500/20">
+                            完成設定
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed } = Vue;
+
+        const RATES = {
+            'B': {
+                '定期': [2100, 2700, 3800, 4700, 5700, 6900, 8100, 9200],
+                '熔接': [2400, 3200, 4800, 6900, 8000, 9400, 11000, 12000],
+                '構造': [2300, 3100, 3700, 4500, 5400, 6600, 7700, 8700],
+                '竣工': [2400, 3200, 4500, 5900, 6900, 8000, 9300, 10500],
+                '重新': [2300, 3100, 3700, 4500, 5400, 6600, 7700, 8700],
+                '變更': [2300, 3100, 3700, 4500, 5400, 6600, 7700, 8700],
+                '既有': [5640, 7560, 9840, 12480, 14760, 17520, 20400, 23040]
+            },
+            'P': {
+                '定期': [1400, 1700, 2100, 2800, 4000, 5200, 6100, 6900, 7900, 9000],
+                '熔接': [2400, 2600, 3600, 4500, 5700, 7400, 8900, 10000, 11500, 13000],
+                '構造': [2100, 2400, 3500, 4300, 5600, 7300, 8300, 9000, 10000, 11000],
+                '竣工': [2100, 2400, 3500, 4300, 5600, 7300, 8300, 9200, 10200, 11500],
+                '重新': [2100, 2400, 3500, 4300, 5600, 7300, 8300, 9000, 10000, 11000],
+                '變更': [2100, 2400, 3500, 4300, 5600, 7300, 8300, 9000, 10000, 11000],
+                '既有': [5040, 5760, 8400, 10320, 13440, 17520, 19920, 21840, 24240, 27000]
+            },
+            'S': {
+                '定期': [1900, 2100, 4000, 5300, 6900, 7600, 9300, 11100, 12300, 14600],
+                '熔接': [2400, 2600, 3600, 4500, 5700, 7400, 8900, 10000, 11200, 13000],
+                '構造': [2100, 2400, 3500, 4300, 5600, 7300, 8300, 9000, 10000, 11000],
+                '竣工': [2100, 2400, 3500, 4300, 5600, 7300, 8300, 9200, 10500, 12000],
+                '重新': [2100, 2400, 3500, 4300, 5600, 7300, 8300, 9000, 10000, 11000],
+                '變更': [2100, 2400, 3500, 4300, 5600, 7300, 8300, 9000, 10000, 11000],
+                '既有': [5040, 5760, 8400, 10320, 13440, 17520, 19920, 21840, 24600, 27600]
+            },
+            'H': {
+                '定期': [900, 1600, 3100, 4200, 5400, 7000, 7800],
+                '熔接': [2000, 2400, 3600, 4500, 6200, 8500, 9500],
+                '構造': [2000, 2400, 3600, 4500, 5700, 8000, 9000],
+                '竣工': [null, null, null, null, null, null, null],
+                '重新': [2000, 2400, 3600, 4500, 5700, 8000, 9000],
+                '變更': [2000, 2400, 3600, 4500, 5700, 8000, 9000],
+                '既有': [2400, 2880, 4320, 5400, 6840, 9600, 10800]
+            },
+            'F': {
+                '定期': [2200, 2400, 3000, 3800, 6100, 7600, 9200, 11300],
+                '重新': [2200, 2400, 3000, 3800, 6100, 7600, 9200, 11300],
+                '變更': [2400, 2600, 3100, 4000, 5000, 6500, 7600, 8500],
+                '既有': [2640, 3120, 3840, 5040, 6960, 8400, 10800, 13200]
+            },
+            'M': {
+                '定期': [2200, 2400, 3000, 3800, 6100, 7600, 9200, 11300],
+                '重新': [2200, 2400, 3000, 3800, 6100, 7600, 9200, 11300],
+                '變更': [2400, 2600, 3100, 4000, 5000, 6500, 7600, 8500],
+                '既有': [2880, 3360, 4200, 5520, 7560, 9240, 11880, 14400]
+            },
+            'E': {
+                '竣工': [2500, 3000],
+                '定期': [2200, 2800],
+                '重新': [2200, 2800],
+                '變更': [2200, 2800],
+                '既有': [3000, 3600]
+            },
+            'G': {
+                '竣工': [null, null],
+                '定期': [2200, 2800],
+                '重新': [2200, 2800],
+                '變更': [2200, 2800],
+                '既有': [3000, 3600]
+            }
+        };
+
+        const DEFAULT_THRESHOLDS = {
+            'F': [5, 10, 20, 50, 100, 200, 500],
+            'M': [5, 10, 20, 50, 100, 200, 500],
+            'E': [2],
+            'G': [0.25],
+            'B': [10, 40, 100, 200, 300, 500, 700],
+            'P': [1.0, 2.0, 5.0, 10, 50, 100, 300, 500, 1000],
+            'S': [1.0, 2.0, 5.0, 10, 50, 100, 300, 500, 1000],
+            'H': [1.0, 2.0, 5.0, 10, 50, 100]
+        };
+
+        const INSP_MAPPING = {
+            'F': '定期', 'W': '熔接', 'U': '構造', 'C': '竣工',
+            'R': '重新', 'M': '變更', 'L': '既有', 'O': '使用'
+        };
+
+        const EQ_NAMES = {
+            'F': '固定式起重機', 'M': '移動式起重機', 'E': '營建用升降機',
+            'G': '吊籠', 'B': '鍋爐', 'P': '第一種壓力容器',
+            'S': '高壓氣體特定設備', 'H': '高壓氣體容器'
+        };
+
+        createApp({
+            setup() {
+                const parsedData = ref([]);
+                const thresholds = ref(JSON.parse(JSON.stringify(DEFAULT_THRESHOLDS)));
+                const currentTab = ref('stats'); // 'stats' or 'debug'
+                const isDragging = ref(false);
+                const isSettingsOpen = ref(false);
+                const loading = ref(false);
+
+                const getTierIndex = (capacity, threshArray) => {
+                    if (!threshArray || threshArray.length === 0) return 0;
+                    for (let i = 0; i < threshArray.length; i++) {
+                        if (capacity < threshArray[i]) return i;
+                    }
+                    return threshArray.length;
+                };
+
+                const stats = computed(() => {
+                    const res = {};
+                    let grandTotal = 0;
+                    let totalItems = 0;
+
+                    parsedData.value.forEach(item => {
+                        const type = item.eqType;
+                        const inspName = INSP_MAPPING[item.inspCode];
+                        if (!inspName) return;
+
+                        const typeRates = RATES[type];
+                        if (!typeRates) return;
+
+                        const rateArray = typeRates[inspName];
+                        const typeThresholds = thresholds.value[type] || [];
+                        const tierIdx = getTierIndex(item.capacity, typeThresholds);
+
+                        if (!res[type]) res[type] = { totalCost: 0, count: 0, items: {} };
+                        if (!res[type].items[inspName]) res[type].items[inspName] = {};
+                        if (!res[type].items[inspName][tierIdx]) res[type].items[inspName][tierIdx] = 0;
+
+                        res[type].items[inspName][tierIdx]++;
+                        res[type].count++;
+                        totalItems++;
+
+                        if (rateArray && rateArray[tierIdx] !== undefined && rateArray[tierIdx] !== null) {
+                            res[type].totalCost += rateArray[tierIdx];
+                            grandTotal += rateArray[tierIdx];
+                        }
+                    });
+
+                    return { byType: res, grandTotal, totalItems };
+                });
+
+                const processFile = async (file) => {
+                    if (!file.name.endsWith('.docx') && !file.name.endsWith('.doc')) {
+                        alert('請上傳 Word 檔案 (.docx)');
+                        return;
+                    }
+                    loading.value = true;
+                    try {
+                        const arrayBuffer = await file.arrayBuffer();
+                        const result = await mammoth.convertToHtml({arrayBuffer: arrayBuffer});
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(result.value, "text/html");
+                        const tables = doc.querySelectorAll("table");
+                        let results = [];
+
+                        tables.forEach(table => {
+                            const rows = table.querySelectorAll("tr");
+                            if (rows.length === 0) return;
+
+                            let headerMap = { code: -1, insp: -1, load: -1, area: -1, vol: -1 };
+                            let foundHeader = false;
+
+                            // 1. 嘗試透過表頭精準定位
+                            for (let r = 0; r < Math.min(rows.length, 10); r++) {
+                                const cells = rows[r].querySelectorAll("td, th");
+                                const textArr = Array.from(cells).map(c => c.textContent.replace(/\s+/g, '').toUpperCase());
+                                
+                                let cIdx = textArr.findIndex(t => t.includes("代碼") || t.includes("號碼") || t.includes("編號"));
+                                let iIdx = textArr.findIndex(t => t.includes("檢查") || t.includes("類別") || t.includes("方式") || t.includes("申報"));
+                                
+                                let loadIdx = textArr.findIndex(t => t.includes("荷重") || t.includes("噸"));
+                                let areaIdx = textArr.findIndex(t => t.includes("面積") || t.includes("M2"));
+                                let volIdx = textArr.findIndex(t => t.includes("內容積") || t.includes("M3"));
+
+                                if (cIdx !== -1) {
+                                    headerMap = { code: cIdx, insp: iIdx, load: loadIdx, area: areaIdx, vol: volIdx };
+                                    foundHeader = true;
+                                    break;
+                                }
+                            }
+
+                            // 2. 解析每一列
+                            rows.forEach(row => {
+                                const cells = Array.from(row.querySelectorAll("td, th"));
+                                if (cells.length === 0) return;
+                                
+                                let eqType = null, eqCode = null, capacity = 0, inspCode = null;
+                                let rawText = cells.map(c => c.textContent.trim().replace(/\n/g, ' ')).join(' | ');
+
+                                // A. 抓取設備代碼 (取最後一個吻合的 10 碼)
+                                let codeCellText = "";
+                                if (headerMap.code !== -1 && cells[headerMap.code]) {
+                                    codeCellText = cells[headerMap.code].textContent.replace(/\s+/g, '').toUpperCase();
+                                } else {
+                                    codeCellText = cells.map(c => c.textContent.replace(/\s+/g, '').toUpperCase()).join(' ');
+                                }
+
+                                let codeMatches = [];
+                                for (let i = 0; i <= codeCellText.length - 10; i++) {
+                                    let sub = codeCellText.substring(i, i + 10);
+                                    if (/^[A-Z0-9]{3}[FMEGBPSH][A-Z0-9]{6}$/.test(sub)) {
+                                        codeMatches.push(sub);
+                                    }
+                                }
+                                if (codeMatches.length > 0) {
+                                    eqCode = codeMatches[codeMatches.length - 1];
+                                    eqType = eqCode.charAt(3);
+                                }
+
+                                if (!eqCode) return;
+
+                                // B. 抓取檢查別
+                                if (headerMap.insp !== -1 && cells[headerMap.insp]) {
+                                    let txt = cells[headerMap.insp].textContent.replace(/\s+/g, '').toUpperCase();
+                                    let m = txt.match(/^[0-9]*([FWUCRMLO])/);
+                                    if (m) {
+                                        inspCode = m[1];
+                                    } else {
+                                        const revMap = { '定期':'F', '熔接':'W', '構造':'U', '竣工':'C', '重新':'R', '變更':'M', '既有':'L', '使用':'O' };
+                                        for (let key in revMap) {
+                                            if (txt.includes(key)) {
+                                                inspCode = revMap[key];
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    for (let i = 0; i < cells.length; i++) {
+                                        let txt = cells[i].textContent.replace(/\s+/g, '').toUpperCase();
+                                        if (txt.includes(eqCode)) continue;
+                                        
+                                        let m = txt.match(/^[0-9]*([FWUCRMLO])/);
+                                        if (m) {
+                                            inspCode = m[1];
+                                            break;
+                                        }
+                                        const revMap = { '定期':'F', '熔接':'W', '構造':'U', '竣工':'C', '重新':'R', '變更':'M', '既有':'L', '使用':'O' };
+                                        for (let key in revMap) {
+                                            if (txt.includes(key)) {
+                                                inspCode = revMap[key];
+                                                break;
+                                            }
+                                        }
+                                        if (inspCode) break;
+                                    }
+                                }
+
+                                if (!inspCode && eqCode.length >= 5) {
+                                    let fifth = eqCode.charAt(4);
+                                    if (['F','W','U','C','R','M','L','O'].includes(fifth)) {
+                                        inspCode = fifth;
+                                    }
+                                }
+
+                                // C. 抓取容量 (依據設備種類去抓對應的標題欄位)
+                                let capIdx = -1;
+                                if (['F', 'M', 'E', 'G'].includes(eqType)) capIdx = headerMap.load;
+                                else if (eqType === 'B') capIdx = headerMap.area;
+                                else if (['P', 'S', 'H'].includes(eqType)) capIdx = headerMap.vol;
+
+                                if (capIdx !== -1 && cells[capIdx]) {
+                                    let txt = cells[capIdx].textContent;
+                                    let num = parseFloat(txt.replace(/[^\d.-]/g, ''));
+                                    if (!isNaN(num) && num > 0) {
+                                        capacity = num;
+                                    }
+                                } else if (capIdx === -1) {
+                                    // 盲抓 (只有在找不到對應表頭時才盲抓，避免抓到項次)
+                                    for (let i = 1; i < cells.length; i++) {
+                                        let txt = cells[i].textContent.replace(/\s+/g, '');
+                                        if (!txt.includes('/') && !txt.includes('-') && !txt.includes('年')) {
+                                            let num = parseFloat(txt.replace(/[^\d.-]/g, ''));
+                                            if (!isNaN(num) && num > 0 && num < 100000) {
+                                                capacity = num;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (eqCode && eqType && inspCode) {
+                                    results.push({ eqCode, eqType, capacity, inspCode, rawText });
+                                }
+                            });
+                        });
+                        
+                        parsedData.value.push(...results);
+                    } catch (e) {
+                        console.error(e);
+                        alert('解析檔案失敗，請確保上傳的是正確的 Word 檔案。');
+                    }
+                    loading.value = false;
+                };
+
+                const onDrop = (e) => {
+                    e.preventDefault();
+                    isDragging.value = false;
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                        processFile(e.dataTransfer.files[0]);
+                    }
+                };
+
+                const onFileChange = (e) => {
+                    if (e.target.files && e.target.files[0]) {
+                        processFile(e.target.files[0]);
+                        e.target.value = '';
+                    }
+                };
+
+                const updateThreshold = (eq, valStr) => {
+                    const val = valStr.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+                    thresholds.value[eq] = val;
+                };
+
+                const getTiersCount = (type) => {
+                    const arr = thresholds.value[type] || [];
+                    return Array.from({ length: arr.length + 1 });
+                };
+
+                const getTierLabel = (type, i) => {
+                    const arr = thresholds.value[type] || [];
+                    const numTiers = arr.length + 1;
+                    if (i === 0) return `< ${arr[i] || '∞'}`;
+                    if (i === numTiers - 1) return `>= ${arr[i-1]}`;
+                    return `${arr[i-1]}~${arr[i]}`;
+                };
+
+                const getRate = (type, inspName, i) => {
+                    const rateArr = RATES[type][inspName];
+                    if (rateArr && rateArr[i] !== undefined) return rateArr[i];
+                    return null;
+                };
+
+                return {
+                    parsedData, thresholds, currentTab, isDragging, isSettingsOpen, loading,
+                    stats, onDrop, onFileChange, updateThreshold, EQ_NAMES, INSP_MAPPING,
+                    getTiersCount, getTierLabel, getRate
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
