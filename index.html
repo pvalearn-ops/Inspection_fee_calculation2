@@ -438,7 +438,7 @@
                                     const textArr = Array.from(cells).map(c => c.textContent.replace(/\s+/g, '').toUpperCase());
                                     
                                     let cIdx = textArr.findIndex(t => t.includes("代碼") || t.includes("號碼") || t.includes("編號"));
-                                    let iIdx = textArr.findIndex(t => t.includes("檢查") || t.includes("類別") || t.includes("方式") || t.includes("申報"));
+                                    let iIdx = textArr.findIndex(t => t.includes("檢查方式") || t.includes("檢查類別") || t.includes("檢查別") || t.includes("申報類別") || t.includes("申報方式"));
                                     
                                     let loadIdx = textArr.findIndex(t => t.includes("荷重") || t.includes("噸"));
                                     let areaIdx = textArr.findIndex(t => t.includes("面積") || t.includes("M2"));
@@ -481,7 +481,7 @@
 
                                     if (headerMap.insp !== -1 && cells[headerMap.insp]) {
                                         let txt = cells[headerMap.insp].textContent.replace(/\s+/g, '').toUpperCase();
-                                        let m = txt.match(/^[0-9]*([FWUCRMLO])/);
+                                        let m = txt.match(/^([FWUCRMLO])[0-9]*$/) || txt.match(/^[0-9]+([FWUCRMLO])$/) || txt.match(/^[0-9]*([FWUCRMLO])/);
                                         if (m) {
                                             inspCode = m[1];
                                         } else {
@@ -498,14 +498,17 @@
                                             let txt = cells[i].textContent.replace(/\s+/g, '').toUpperCase();
                                             if (txt.includes(eqCode)) continue;
                                             
-                                            let m = txt.match(/^[0-9]*([FWUCRMLO])/);
+                                            // 嚴格比對英文代號 (如 F, F1, 1W)
+                                            let m = txt.match(/^([FWUCRMLO])[0-9]*$/) || txt.match(/^[0-9]+([FWUCRMLO])$/);
                                             if (m) {
                                                 inspCode = m[1];
                                                 break;
                                             }
+                                            
+                                            // 嚴格比對中文，避免誤判 "熔接容器"
                                             const revMap = { '定期':'F', '熔接':'W', '構造':'U', '竣工':'C', '重新':'R', '變更':'M', '既有':'L', '使用':'O' };
                                             for (let key in revMap) {
-                                                if (txt.includes(key)) {
+                                                if (txt === key || txt === key + '檢查' || txt.includes(`:${key}`) || txt.includes(`：${key}`)) {
                                                     inspCode = revMap[key];
                                                     break;
                                                 }
