@@ -431,23 +431,34 @@
                                 if (rows.length === 0) return;
 
                                 let headerMap = { code: -1, insp: -1, load: -1, area: -1, vol: -1 };
+                                let headerLength = 0;
                                 let foundHeader = false;
 
-                                for (let r = 0; r < Math.min(rows.length, 10); r++) {
+                                // 標題可能跨多列 (例如「設備代碼/刻印號碼」與「傳熱面積(加總)/內容積(加總)」分行)，
+                                // 因此逐列累積各欄位位置，不在找到代碼後就中斷，避免漏掉面積/容積欄。
+                                for (let r = 0; r < Math.min(rows.length, 15); r++) {
                                     const cells = rows[r].querySelectorAll("td, th");
                                     const textArr = Array.from(cells).map(c => c.textContent.replace(/\s+/g, '').toUpperCase());
-                                    
-                                    let cIdx = textArr.findIndex(t => t.includes("代碼") || t.includes("號碼") || t.includes("編號"));
-                                    let iIdx = textArr.findIndex(t => t.includes("檢查方式") || t.includes("檢查類別") || t.includes("檢查別") || t.includes("申報類別") || t.includes("申報方式"));
-                                    
-                                    let loadIdx = textArr.findIndex(t => t.includes("荷重") || t.includes("噸"));
-                                    let areaIdx = textArr.findIndex(t => t.includes("面積") || t.includes("M2"));
-                                    let volIdx = textArr.findIndex(t => t.includes("內容積") || t.includes("M3"));
 
-                                    if (cIdx !== -1) {
-                                        headerMap = { code: cIdx, insp: iIdx, load: loadIdx, area: areaIdx, vol: volIdx };
+                                    let cIdx = textArr.findIndex(t => t.match(/代.*碼|號.*碼|編.*號|代.*码|号.*码|编.*号/));
+                                    let iIdx = textArr.findIndex(t => t.match(/檢.*查.*方.*式|檢.*查.*類.*別|檢.*查.*別|申.*報.*類.*別|申.*報.*方.*式/));
+
+                                    let loadIdx = textArr.findIndex(t => t.match(/荷.*重|噸|吨/));
+                                    // 傳熱面積(加總)：鍋爐(B)專用欄位
+                                    let areaIdx = textArr.findIndex(t => t.match(/傳.*熱.*面.*積|傳.*熱.*面.*积|面.*積|面.*积/));
+                                    // 內容積(加總)：第一種壓力容器(P)、高壓氣體特定設備(S)、高壓氣體容器(H)專用欄位
+                                    let volIdx = textArr.findIndex(t => t.match(/內.*容.*積|內.*容.*积|容.*積|容.*积|容.*量|體.*積|体.*积/));
+
+                                    if (headerMap.code === -1 && cIdx !== -1) headerMap.code = cIdx;
+                                    if (headerMap.insp === -1 && iIdx !== -1) headerMap.insp = iIdx;
+                                    if (headerMap.load === -1 && loadIdx !== -1) headerMap.load = loadIdx;
+                                    if (headerMap.area === -1 && areaIdx !== -1) headerMap.area = areaIdx;
+                                    if (headerMap.vol === -1 && volIdx !== -1) headerMap.vol = volIdx;
+
+                                    // 以含「代碼」的那一列作為資料欄位數的基準 (用於偵測合併儲存格造成的錯位)
+                                    if (cIdx !== -1 && !foundHeader) {
+                                        headerLength = cells.length;
                                         foundHeader = true;
-                                        break;
                                     }
                                 }
 
@@ -458,24 +469,35 @@
                                     let eqType = null, eqCode = null, capacity = 0, inspCode = null;
                                     let rawText = cells.map(c => c.textContent.trim().replace(/\n/g, ' ')).join(' | ');
 
-                                    let codeCellText = "";
-                                    if (headerMap.code !== -1 && cells[headerMap.code]) {
-                                        codeCellText = cells[headerMap.code].textContent.replace(/\s+/g, '').toUpperCase();
-                                    } else {
-                                        codeCellText = cells.map(c => c.textContent.replace(/\s+/g, '').toUpperCase()).join(' ');
-                                    }
+                                    const findCodesInText = (text) => {
+                                        let matches = [];
+                                        for (let i = 0; i <= text.length - 10; i++) {
+                                            let sub = text.substring(i, i + 10);
+                                            if (/^[A-Z0-9]{3}[FMEGBPSH][A-Z0-9]{6}$/.test(sub)) matches.push(sub);
+                                        }
+                                        return matches;
+                                    };
 
-                                    let codeMatches = [];
-                                    for (let i = 0; i <= codeCellText.length - 10; i++) {
-                                        let sub = codeCellText.substring(i, i + 10);
-                                        if (/^[A-Z0-9]{3}[FMEGBPSH][A-Z0-9]{6}$/.test(sub)) {
-                                            codeMatches.push(sub);
+                                    // 逐格尋找設備代碼，並記住代碼所在的「欄位索引」。
+                                    // 標題列被壓在 Word 頁首中、mammoth 不會解析出來，因此無法靠標題定位欄位，
+                                    // 改以代碼欄為基準推算其他欄位 (此名冊欄位順序固定)。
+                                    let codeColIdx = -1;
+                                    for (let i = 0; i < cells.length; i++) {
+                                        let t = cells[i].textContent.replace(/\s+/g, '').toUpperCase();
+                                        let matches = findCodesInText(t);
+                                        if (matches.length > 0) {
+                                            eqCode = matches[matches.length - 1];
+                                            codeColIdx = i;
+                                            break;
                                         }
                                     }
-                                    if (codeMatches.length > 0) {
-                                        eqCode = codeMatches[codeMatches.length - 1];
-                                        eqType = eqCode.charAt(3);
+                                    // 退路：代碼若被拆到多格，改用整列合併字串 (此時無欄位索引)
+                                    if (!eqCode) {
+                                        let joined = cells.map(c => c.textContent.replace(/\s+/g, '').toUpperCase()).join(' ');
+                                        let matches = findCodesInText(joined);
+                                        if (matches.length > 0) eqCode = matches[matches.length - 1];
                                     }
+                                    if (eqCode) eqType = eqCode.charAt(3);
 
                                     if (!eqCode) return;
 
@@ -524,18 +546,41 @@
                                         }
                                     }
 
+                                    // 嚴格依設備種類決定要讀取的容量欄位：
+                                    //   鍋爐(B)            → 傳熱面積(加總)
+                                    //   P / S / H          → 內容積(加總)
+                                    //   F / M / E / G      → 荷重(噸)
+                                    // 名冊欄位順序固定 (項次,檢查日期,設備代碼,事業單位,設備型式,傳熱面積,內容積,...)：
+                                    // 傳熱面積在代碼欄 +3、內容積在代碼欄 +4。優先用標題定位，找不到標題時改用此偏移。
                                     let capIdx = -1;
-                                    if (['F', 'M', 'E', 'G'].includes(eqType)) capIdx = headerMap.load;
-                                    else if (eqType === 'B') capIdx = headerMap.area;
-                                    else if (['P', 'S', 'H'].includes(eqType)) capIdx = headerMap.vol;
+                                    if (['F', 'M', 'E', 'G'].includes(eqType)) {
+                                        capIdx = headerMap.load;
+                                    } else if (eqType === 'B') {
+                                        capIdx = headerMap.area !== -1 ? headerMap.area
+                                               : (codeColIdx !== -1 ? codeColIdx + 3 : -1);
+                                    } else if (['P', 'S', 'H'].includes(eqType)) {
+                                        capIdx = headerMap.vol !== -1 ? headerMap.vol
+                                               : (codeColIdx !== -1 ? codeColIdx + 4 : -1);
+                                    }
 
-                                    if (capIdx !== -1 && cells[capIdx]) {
-                                        let txt = cells[capIdx].textContent;
-                                        let num = parseFloat(txt.replace(/[^\d.-]/g, ''));
-                                        if (!isNaN(num) && num > 0) {
-                                            capacity = num;
-                                        }
-                                    } else if (capIdx === -1) {
+                                    const parseCapCell = (cell) => {
+                                        if (!cell) return NaN;
+                                        let txt = cell.textContent.replace(/\s+/g, '');
+                                        if (!txt || txt.includes('/') || txt.includes('年')) return NaN;
+                                        let n = parseFloat(txt.replace(/[^\d.-]/g, ''));
+                                        return (!isNaN(n) && n > 0 && n < 100000) ? n : NaN;
+                                    };
+
+                                    if (capIdx !== -1) {
+                                        // 偵測合併儲存格造成的整列左移 (資料列欄位數少於標題列)
+                                        let offset = (headerLength > 0 && cells.length < headerLength) ? (cells.length - headerLength) : 0;
+                                        // 先讀錯位修正後的位置，再退回原始欄位位置；兩者皆為「指定欄位」，
+                                        // 不會跨欄誤抓 (例如 S 設備兩欄都有值時，仍只取內容積那一欄)。
+                                        let num = parseCapCell(cells[capIdx + offset]);
+                                        if (isNaN(num)) num = parseCapCell(cells[capIdx]);
+                                        if (!isNaN(num)) capacity = num;
+                                    } else {
+                                        // 極端情況：標題列完全沒抓到，才使用全列盲抓
                                         for (let i = 1; i < cells.length; i++) {
                                             let txt = cells[i].textContent.replace(/\s+/g, '');
                                             if (!txt.includes('/') && !txt.includes('-') && !txt.includes('年')) {
